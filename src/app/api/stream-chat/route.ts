@@ -140,14 +140,23 @@ export async function GET(req: Request) {
                     const [existingResponse] = await db
                       .select()
                       .from(pollResponses)
-                      .where(eq(pollResponses.userId, message.authorDetails?.channelId ?? ""))
+                      .where(
+                        sql`${pollResponses.userId} = ${message.authorDetails?.channelId ?? ""} 
+                        AND ${pollResponses.pollId} = ${currentPoll.id}`
+                      )
                       .limit(1);
 
                     if (existingResponse) {
                       // Update existing response
                       await db.update(pollResponses)
-                        .set({ answer: text })
-                        .where(eq(pollResponses.userId, message.authorDetails?.channelId ?? ""));
+                        .set({ 
+                          answer: text,
+                          respondedAt: new Date()
+                        })
+                        .where(
+                          sql`${pollResponses.userId} = ${message.authorDetails?.channelId ?? ""} 
+                          AND ${pollResponses.pollId} = ${currentPoll.id}`
+                        );
                     } else {
                       // Store new response
                       await db.insert(pollResponses).values({
@@ -155,6 +164,7 @@ export async function GET(req: Request) {
                         userName: formattedMessage.author,
                         userImage: formattedMessage.authorImage,
                         answer: text,
+                        pollId: currentPoll.id
                       });
                     }
 
@@ -197,21 +207,22 @@ export async function GET(req: Request) {
                         })
                         .where(eq(pollState.sessionId, session.id));
 
-                      // Always update leaderboard for any response
+                      // Award points only if:
+                      // 1. Answer matches correct option
+                      // 2. User hasn't received points yet
+                      // 3. We haven't awarded all points yet
                       const userId = message.authorDetails?.channelId;
-                      if (userId) {
-                        const isCorrect = text === correctOption;
-                        let points = 0;
-                        
-                        if (isCorrect && !correctRespondersSet.has(userId)) {
-                          correctRespondersSet.add(userId);
-                          points = correctRespondersCount < POINTS_MAPPING.length 
-                            ? (POINTS_MAPPING[correctRespondersCount] as number)
-                            : 0;
-                          correctRespondersCount++;
-                        }
+                      if (
+                        text === correctOption && 
+                        userId && 
+                        !correctRespondersSet.has(userId) && 
+                        correctRespondersCount < POINTS_MAPPING.length
+                      ) {
+                        const points = POINTS_MAPPING[correctRespondersCount] as number;
+                        correctRespondersSet.add(userId);
+                        correctRespondersCount++;
 
-                        // Update leaderboard entry
+                        // Update leaderboard with correct answer and bonus points
                         await db.transaction(async (tx) => {
                           const [existingEntry] = await tx
                             .select()
@@ -227,9 +238,9 @@ export async function GET(req: Request) {
                             await tx
                               .update(leaderboard)
                               .set({
-                                correctAnswers: existingEntry.correctAnswers + (isCorrect ? 1 : 0),
+                                correctAnswers: existingEntry.correctAnswers + 1,
                                 totalAnswers: existingEntry.totalAnswers + 1,
-                                points: existingEntry.points + points,
+                                points: existingEntry.points + points, // Only bonus points
                                 lastAnsweredAt: new Date(),
                                 userName: formattedMessage.author,
                                 userImage: formattedMessage.authorImage,
@@ -246,17 +257,76 @@ export async function GET(req: Request) {
                               userImage: formattedMessage.authorImage,
                               videoId: session.youtubeVideoId,
                               pollId: currentPoll.id,
-                              correctAnswers: isCorrect ? 1 : 0,
+                              correctAnswers: 1,
                               totalAnswers: 1,
-                              points,
+                              points: points, // Only bonus points
                               lastAnsweredAt: new Date(),
                             });
                           }
+
+                          // Also insert into pollResponses table
+                          await tx.insert(pollResponses).values({
+                            userId,
+                            userName: formattedMessage.author,
+                            userImage: formattedMessage.authorImage,
+                            answer: text,
+                            respondedAt: new Date(),
+                            pollId: currentPoll.id
+                          });
                         });
 
-                        if (isCorrect) {
-                          console.log(`Awarded ${points} points to ${formattedMessage.author} for being #${correctRespondersCount} correct answer`);
-                        }
+                        console.log(`Awarded ${points} points to ${formattedMessage.author} for being #${correctRespondersCount} correct answer`);
+                      } else if (userId && !correctRespondersSet.has(userId)) {
+                        // Update total answers for incorrect responses
+                        await db.transaction(async (tx) => {
+                          const [existingEntry] = await tx
+                            .select()
+                            .from(leaderboard)
+                            .where(
+                              sql`${leaderboard.userId} = ${userId} 
+                              AND ${leaderboard.videoId} = ${session.youtubeVideoId}
+                              AND ${leaderboard.pollId} = ${currentPoll.id}`
+                            )
+                            .limit(1);
+
+                          if (existingEntry) {
+                            await tx
+                              .update(leaderboard)
+                              .set({
+                                totalAnswers: existingEntry.totalAnswers + 1,
+                                lastAnsweredAt: new Date(),
+                                userName: formattedMessage.author,
+                                userImage: formattedMessage.authorImage,
+                              })
+                              .where(
+                                sql`${leaderboard.userId} = ${userId} 
+                                AND ${leaderboard.videoId} = ${session.youtubeVideoId}
+                                AND ${leaderboard.pollId} = ${currentPoll.id}`
+                              );
+                          } else {
+                            await tx.insert(leaderboard).values({
+                              userId,
+                              userName: formattedMessage.author,
+                              userImage: formattedMessage.authorImage,
+                              videoId: session.youtubeVideoId,
+                              pollId: currentPoll.id,
+                              correctAnswers: 0,
+                              totalAnswers: 1,
+                              points: 0,
+                              lastAnsweredAt: new Date(),
+                            });
+                          }
+
+                          // Also insert into pollResponses table for incorrect answers
+                          await tx.insert(pollResponses).values({
+                            userId,
+                            userName: formattedMessage.author,
+                            userImage: formattedMessage.authorImage,
+                            answer: text,
+                            respondedAt: new Date(),
+                            pollId: currentPoll.id
+                          });
+                        });
                       }
                     }
                   } catch (error) {

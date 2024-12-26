@@ -25,7 +25,7 @@ export const sessions = createTable(
   "sessions",
   {
     id: serial("id").primaryKey(),
-    youtubeVideoId: varchar("youtube_video_id", { length: 256 }).notNull(),
+    youtubeVideoId: varchar("youtube_video_id", { length: 256 }).notNull().unique(),
     liveChatId: varchar("live_chat_id", { length: 256 }).notNull(),
     startedAt: timestamp("started_at", { withTimezone: true })
       .default(sql`CURRENT_TIMESTAMP`)
@@ -71,10 +71,13 @@ export const pollResponses = createTable(
     respondedAt: timestamp("responded_at", { withTimezone: true })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
+    pollId: integer("poll_id")
+      .notNull()
+      .references(() => polls.id),
   },
   (table) => ({
     pollUserIndex: index("poll_user_idx").on(table.userId),
-    uniqueResponse: unique("unique_response").on(table.userId),
+    uniqueResponse: unique("unique_response").on(table.userId, table.pollId),
   }),
 );
 
