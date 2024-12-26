@@ -52,26 +52,45 @@ export const leaderboardRouter = createTRPCRouter({
     )
     .query(async ({ input }) => {
       if (!input.videoId) {
-        // If no videoId provided, return empty list to prevent showing combined scores
         return [];
       }
 
-      const users = await db
-        .select({
-          userId: leaderboard.userId,
-          userName: leaderboard.userName,
-          userImage: leaderboard.userImage,
-          correctAnswers: sql<number>`sum(${leaderboard.correctAnswers})::integer`,
-          totalAnswers: sql<number>`sum(${leaderboard.totalAnswers})::integer`,
-          points: sql<number>`sum(${leaderboard.points})::integer`,
-        })
-        .from(leaderboard)
-        .where(eq(leaderboard.videoId, input.videoId))
-        .groupBy(leaderboard.userId, leaderboard.userName, leaderboard.userImage)
-        .orderBy(desc(sql<number>`sum(${leaderboard.points})`))
-        .limit(input.limit);
+      try {
+        // First check if session exists
+        const session = await db
+          .select()
+          .from(sessions)
+          .where(eq(sessions.youtubeVideoId, input.videoId))
+          .limit(1);
 
-      return users;
+        console.log("Session check result:", session);
+
+        if (!session.length) {
+          console.error("No session found for videoId:", input.videoId);
+          throw new Error("No session found for this video ID");
+        }
+
+        const users = await db
+          .select({
+            userId: leaderboard.userId,
+            userName: leaderboard.userName,
+            userImage: leaderboard.userImage,
+            correctAnswers: sql<number>`sum(${leaderboard.correctAnswers})::integer`,
+            totalAnswers: sql<number>`sum(${leaderboard.totalAnswers})::integer`,
+            points: sql<number>`sum(${leaderboard.points})::integer`,
+          })
+          .from(leaderboard)
+          .where(eq(leaderboard.videoId, input.videoId))
+          .groupBy(leaderboard.userId, leaderboard.userName, leaderboard.userImage)
+          .orderBy(desc(sql<number>`sum(${leaderboard.points})`))
+          .limit(input.limit);
+
+        console.log("Users query result:", users);
+        return users;
+      } catch (error) {
+        console.error("Error in getTopUsers:", error);
+        throw error;
+      }
     }),
 
   getUserHistory: publicProcedure
