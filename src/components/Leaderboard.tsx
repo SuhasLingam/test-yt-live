@@ -14,7 +14,7 @@ export function Leaderboard() {
   const { videoId } = usePollContext();
   const { data: leaderboardData } = api.leaderboard.getTopUsers.useQuery(
     { 
-      limit: 5,
+      limit: 10,
       videoId: videoId ?? undefined
     },
     { 
